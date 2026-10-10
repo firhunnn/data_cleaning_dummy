@@ -1,0 +1,495 @@
+-- Create Proper Case Function
+DELIMITER $$
+CREATE FUNCTION ProperCase(str TEXT)
+RETURNS TEXT
+DETERMINISTIC
+BEGIN
+    DECLARE c CHAR(1);                             -- Current character
+    DECLARE s TEXT;                                -- Modified string
+    DECLARE i INT DEFAULT 1;                       -- Position index
+    DECLARE bool INT DEFAULT 1;                    -- Flag to check word start
+    DECLARE punct CHAR(17) DEFAULT ' ()[]{},.-_!@;:?/';  -- Word separators
+    SET s = LOWER(str);                            -- Convert input to lowercase
+    WHILE i <= CHAR_LENGTH(s) DO
+        SET c = SUBSTRING(s, i, 1);                -- Get each character
+        IF LOCATE(c, punct) > 0 THEN
+            SET bool = 1;                          -- Next char is start of a word
+        ELSEIF bool = 1 THEN
+            SET s = CONCAT(
+                LEFT(s, i - 1),
+                UPPER(c),
+                SUBSTRING(s, i + 1)
+            );
+            SET bool = 0;                          -- Reset flag after capitalizing
+        END IF;
+        SET i = i + 1;
+    END WHILE;
+    RETURN s;
+END$$
+DELIMITER ;
+
+-- Create new table onpay_2026. All start with text, we will standardize it later
+CREATE TABLE onpay_2026 (
+    id TEXT,
+    form_code TEXT,
+    form_title TEXT,
+    invoice_number TEXT,
+    donor_name TEXT,
+    email TEXT,
+    phone_number TEXT,
+    product TEXT,
+    total_quantity TEXT,
+    price_total TEXT,
+    grand_total TEXT,
+    created_at TEXT,
+    sale_status TEXT,
+    ip_address TEXT
+);
+
+-- Import data on onpay_2026 to the database
+LOAD DATA INFILE "C:/ProgramData/MySQL/MySQL Server 8.0/Uploads/onpay_2026.csv"
+INTO TABLE onpay_2026 
+FIELDS TERMINATED BY ',' 
+ENCLOSED BY '"' 
+LINES TERMINATED BY '\r'
+Ignore 1 lines;
+
+-- Call out table onpay_2026
+Select * 
+From onpay_2026;
+
+-- Delimit any line feed into single line
+WITH RECURSIVE product_split AS (
+    SELECT id,created_at, sale_status, form_code, form_title, invoice_number, donor_name, email, phone_number, product, total_quantity, 
+           SUBSTRING_INDEX(product, '\n', 1) AS single_product,
+           IF(LOCATE('\n', product) > 0, SUBSTRING(product, LOCATE('\n', product) + 1), '') AS remaining
+    FROM onpay_2026
+    UNION ALL
+    SELECT id,created_at, sale_status, form_code, form_title, invoice_number, donor_name, email, phone_number, product, total_quantity, 
+           SUBSTRING_INDEX(remaining, '\n', 1),
+           IF(LOCATE('\n', remaining) > 0, SUBSTRING(remaining, LOCATE('\n', remaining) + 1), '')
+    FROM product_split
+    WHERE remaining <> ''
+)
+SELECT cast(id as unsigned) as id, created_at, sale_status, form_code, form_title, invoice_number, donor_name, email, phone_number, product, total_quantity, TRIM(single_product) AS product_item
+FROM product_split
+ORDER BY id;
+
+-- Create another table based on above query and name it as onpayt_2026
+Create table onpayt_2026
+WITH RECURSIVE product_split AS (
+    SELECT id,created_at, sale_status, form_code, form_title, invoice_number, donor_name, email, phone_number, product, price_total, grand_total, total_quantity, 
+           SUBSTRING_INDEX(product, '\n', 1) AS single_product,
+           IF(LOCATE('\n', product) > 0, SUBSTRING(product, LOCATE('\n', product) + 1), '') AS remaining
+    FROM onpay_2026
+    UNION ALL
+    SELECT id,created_at, sale_status, form_code, form_title, invoice_number, donor_name, email, phone_number, product, price_total, grand_total, total_quantity, 
+           SUBSTRING_INDEX(remaining, '\n', 1),
+           IF(LOCATE('\n', remaining) > 0, SUBSTRING(remaining, LOCATE('\n', remaining) + 1), '')
+    FROM product_split
+    WHERE remaining <> ''
+)
+SELECT cast(id as unsigned) as id, created_at, sale_status, form_code, form_title, invoice_number, donor_name, email, phone_number, product, price_total, grand_total, total_quantity, TRIM(single_product) AS product_item
+FROM product_split
+ORDER BY id;
+
+
+-- Replace any \r to '' in product_item
+Start transaction;
+Update onpayt_2026	
+Set product_item = Replace(product_item, '\r' ,'');
+Rollback;
+Commit; 
+
+-- Call out table onpayt_2026
+Select * 
+From onpayt_2026;
+
+-- Split created_at to created_date and created_time. Using select statement first then we alter table
+Select created_at,
+	STR_TO_DATE(LEFT(created_at, 10), '%d-%m-%Y') as created_date,
+    STR_TO_DATE(TRIM(SUBSTRING(created_at, 11)), '%H:%i:%s') as created_time
+From 
+	onpayt_2026;
+    
+-- Create new column name created_date and created_time with date and time format respectively
+Alter table onpayt_2026
+Add created_date date,
+Add created_time time;
+
+-- Populate created_date and created_time with created_at
+Start transaction;
+Update onpayt_2026
+SET 
+    created_date = STR_TO_DATE(LEFT(created_at, 10), '%d-%m-%Y'),
+    created_time = STR_TO_DATE(TRIM(SUBSTRING(created_at, 11)), '%H:%i:%s');
+Rollback;
+Commit;
+
+
+-- Grouping product to identify which of them doesnt have RM value
+with table_1 as(Select distinct product_item, grand_total, product,
+	case 
+		when product_item not like '%RM%' then 'No Price'
+		when product_item like '%RM%RM%' then 'Has 2 Price'
+        else 'Has 1 Price'
+	end as price_status
+From onpayt_2026)
+Select distinct product_item, product, grand_total
+From table_1 
+Where price_status = 'No Price';
+
+-- Rename product_item to be inserted with price
+Select 
+	distinct product_item, product,
+    case
+		when product_item = '1. Taja Anak Yatim x 1' then '1. Taja Anak Yatim RM0 x 1'
+        when product_item = '1. Khabar Palestin x 1' then '1. Khabar Palestin RM0 x 1'
+		when product_item = '1. Sumbangan projek livelihood x 1' then '1. Sumbangan projek livelihood RM50 x 1'
+        when product_item = '2. Sumbangan projek livelihood x 1' then '2. Sumbangan projek livelihood RM50 x 1'
+        when product_item = '1. Sumbangan mySedekah x 1' and grand_total = 30.00 then '1. Sumbangan mySedekah RM30 x 1'
+		when product_item = '1. Sumbangan mySedekah x 1' then '1. Sumbangan mySedekah RM10 x 1'
+		when product_item = '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia x 1' then '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia RM10 x 1'
+        when product_item = '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia x 2' then '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia RM10 x 2'
+		when product_item = '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia x 3' then '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia RM10 x 3'
+        when product_item = '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia x 5' then '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia RM10 x 5'
+		when product_item = '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh x 5' then '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh RM10 x 5'
+        when product_item = '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh x 3' then '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh RM10 x 3'
+        when product_item = '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh x 1' then '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh RM10 x 1 '
+        when product_item = '1. Sedekah Ramadan x 5' then '1. Sedekah Ramadan RM10 X 5'
+        when product_item = '1. Sedekah Ramadan x 4' then '1. Sedekah Ramadan RM10 X 4'
+        when product_item = '1. Sedekah Ramadan x 3' then '1. Sedekah Ramadan RM10 X 3'
+        when product_item = '1. Sedekah Ramadan x 2' then '1. Sedekah Ramadan RM10 X 2'
+        when product_item = '1. Sedekah Ramadan x 1' then '1. Sedekah Ramadan RM10 X 1'
+        when product_item = '1. Sedekah Ramadan x 6' then '1. Sedekah Ramadan RM10 X 6'
+        when product_item = '1. Sedekah Ramadan x 7' then '1. Sedekah Ramadan RM10 X 7'
+        when product_item = '1. Sedekah Ramadan x 8' then '1. Sedekah Ramadan RM10 X 8'
+        when product_item = '1. Sedekah Ramadan x 10' then '1. Sedekah Ramadan RM10 X 10'
+        when product_item = '1. (1 Lot RM100) Projek Wakaf Kompleks Air di Somalia x 1' then '1. 1 Lot RM100 Projek Wakaf Kompleks Air di Somalia RM100 x 1'
+        when product_item = '1. (1 Lot RM100) Projek Wakaf Kompleks Air di Somalia x 2' then '1. 1 Lot RM100 Projek Wakaf Kompleks Air di Somalia RM100 x 2'
+        when product_item = '1. (1 Lot RM100) Projek Wakaf Kompleks Air di Somalia x 3' then '1. 1 Lot RM100 Projek Wakaf Kompleks Air di Somalia RM100 x 3'
+    else product_item
+	end as new_product_item
+From onpayt_2026;
+
+-- Updating product_item that doesnt have price with price
+Start transaction;
+Update onpayt_2026
+set product_item =
+     case
+		when product_item = '1. Taja Anak Yatim x 1' then '1. Taja Anak Yatim RM0 x 1'
+        when product_item = '1. Khabar Palestin x 1' then '1. Khabar Palestin RM0 x 1'
+		when product_item = '1. Sumbangan projek livelihood x 1' then '1. Sumbangan projek livelihood RM50 x 1'
+        when product_item = '2. Sumbangan projek livelihood x 1' then '2. Sumbangan projek livelihood RM50 x 1'
+        when product_item = '1. Sumbangan mySedekah x 1' and grand_total = 30.00 then '1. Sumbangan mySedekah RM30 x 1'
+		when product_item = '1. Sumbangan mySedekah x 1' then '1. Sumbangan mySedekah RM10 x 1'
+		when product_item = '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia x 1' then '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia RM10 x 1'
+        when product_item = '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia x 2' then '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia RM10 x 2'
+		when product_item = '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia x 3' then '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia RM10 x 3'
+        when product_item = '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia x 5' then '1. (Sedekah Wakaf) Projek Wakaf Kompleks Air di Somalia RM10 x 5'
+		when product_item = '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh x 5' then '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh RM10 x 5'
+        when product_item = '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh x 3' then '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh RM10 x 3'
+        when product_item = '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh x 1' then '1. (Sedekah Wakaf) Projek Telaga Air Bangladesh RM10 x 1 '
+        when product_item = '1. Sedekah Ramadan x 5' then '1. Sedekah Ramadan RM10 X 5'
+        when product_item = '1. Sedekah Ramadan x 4' then '1. Sedekah Ramadan RM10 X 4'
+        when product_item = '1. Sedekah Ramadan x 3' then '1. Sedekah Ramadan RM10 X 3'
+        when product_item = '1. Sedekah Ramadan x 2' then '1. Sedekah Ramadan RM10 X 2'
+        when product_item = '1. Sedekah Ramadan x 1' then '1. Sedekah Ramadan RM10 X 1'
+        when product_item = '1. Sedekah Ramadan x 6' then '1. Sedekah Ramadan RM10 X 6'
+        when product_item = '1. Sedekah Ramadan x 7' then '1. Sedekah Ramadan RM10 X 7'
+        when product_item = '1. Sedekah Ramadan x 8' then '1. Sedekah Ramadan RM10 X 8'
+        when product_item = '1. Sedekah Ramadan x 10' then '1. Sedekah Ramadan RM10 X 10'
+        when product_item = '1. (1 Lot RM100) Projek Wakaf Kompleks Air di Somalia x 1' then '1. 1 Lot RM100 Projek Wakaf Kompleks Air di Somalia RM100 x 1'
+        when product_item = '1. (1 Lot RM100) Projek Wakaf Kompleks Air di Somalia x 2' then '1. 1 Lot RM100 Projek Wakaf Kompleks Air di Somalia RM100 x 2'
+        when product_item = '1. (1 Lot RM100) Projek Wakaf Kompleks Air di Somalia x 3' then '1. 1 Lot RM100 Projek Wakaf Kompleks Air di Somalia RM100 x 3'
+    else product_item
+	end;
+    
+-- Extract quantity and price from product_item
+Select
+	product_item,
+    substring_index(lower(product_item), 'x', -1) as quantity,
+    replace(replace(substring_index(substring_index(product_item, 'RM', -1), ' ', 1), ')', ''), ',','') as price
+From 
+	onpayt_2026;
+
+-- Create column quantity and price. 
+Alter table onpayt_2026
+add column quantity int,
+add column price int;
+
+-- Populate quantity and price column with above query and remove any '()' and ',' in product_item
+Start transaction;
+Update onpayt_2026
+Set 
+	product_item = 
+		case 
+        when product_item like '%(%)%' then regexp_replace(product_item, '[\\(\\)]', '')
+        when product_item like '%,%' then replace(product_item, ',', '')
+        when product_item like '%-%' then replace(product_item, ',', '')
+        else product_item
+        end,
+	quantity = substring_index(lower(product_item), 'x', -1),
+    price = replace(replace(substring_index(substring_index(product_item, 'RM', -1), ' ', 1), ')', ''), ',','');
+Rollback;
+Commit;
+
+-- Create column name total_donation; price x quantity
+Alter table onpayt_2026
+add column total_donation int;
+
+-- Populate total_donation with price x quantity
+Start transaction;
+Update onpayt_2026
+Set total_donation = price * quantity;
+Rollback;
+Commit;
+
+-- Get product name only without quantity and price from product_item
+SELECT DISTINCT product_item,
+    trim(substring_index(REGEXP_REPLACE(product_item, 'RM[0-9]+[ ]*x[ ]*[0-9]+', ''), '.', -1)) AS product_name
+FROM onpayt_2026;
+    
+-- Create new column name product_name
+Alter table onpayt_2026
+add column product_name varchar(500);
+
+-- Populate product_name with query above
+Start transaction;
+Update onpayt_2026
+Set product_name = trim(substring_index(REGEXP_REPLACE(product_item, 'RM[0-9]+[ ]*x[ ]*[0-9]+', ''), '.', -1));
+Rollback;
+Commit;
+
+-- Grouping sale_status
+Select distinct sale_status,
+	case when sale_status = 'Menunggu' then 'Pending'
+    else 'Successful'
+    end as n_sale_status
+From onpayt_2026;
+
+-- Change sale_status Menunggu to Pending and Disahkan to Successful
+Start transaction;
+Update onpayt_2026
+Set sale_status =
+	case when sale_status = 'Menunggu' then 'Pending'
+    else 'Successful'
+    end;
+Rollback;
+Commit;
+
+-- Check the validity of email, invalid email to null and typo
+with table_1 as (Select
+	email, 
+    length(email) as leng_email,
+    count(email) as total_email,
+    concat('@', substring_index(email, '@', -1)) as prefix_after,
+    substring_index(email, '@', 1) as prefix_before
+From onpayt_2026
+group by email),
+table_2 as (Select distinct prefix_after as unique_prefix,
+	substring_index(prefix_after, '.', 1) as before_dot,
+count(prefix_after)
+From table_1
+where
+	prefix_after not regexp '@bplnt.|@utm.|@beaudorarawatanuban.|@arb.|@mpob.|@petronas.|edu.|@tm.|gov.|@perodua.|@tnb.|@usm.|@airselangor.|@tasco.|@bankrakyat.|@ad-teguh.|@beaudorarawatnuban.|@icloud.|@islamic-relief.|@cyberview.|@yakeb.|@yadim.|@turbine-group.|@spnb.|@terratech.|@Stablenf.|@sadr.|@pwslabuan.|@post.|@polyplastics.|@outlook.|@msn.|@msmsugar.|@mail.|@mac.|@live.|@karangkraf.|@ikram.|@himcoffee.|@hdcglobal.|@etiqa.|@enserv.|@emirates.|@dhiyanuhstore.|@dasb.|@concord.'
+    and prefix_after not like '@my.%'
+    and prefix_after not like '@cima.%'
+group by prefix_after, before_dot)
+Select unique_prefix, before_dot
+From table_2;
+
+-- Fix the typo and standard the email prefix
+with table_1 as (Select	
+	email,
+    case 
+		when email like '%yahooyahoo%' then replace(email, 'yahooyahoo', 'yahoo')
+        when email like '%yhaoo%' then replace(email, 'yhaoo', 'yahoo')
+        when email like '%yaoo%' then replace(email, 'yaoo', 'yahoo')
+        when email like '%yahii%' then replace(email, 'yahii', 'yahoo')
+        when email like '%yahoo.c' then replace(email, 'yahoo.c', 'yahoo.com')
+        when email like '%@yahoo.com619454%' then replace(email, '@yahoo.com619454', 'yahoo.com')
+        when email like '%gnail%' then replace(email, 'gnail', 'gmail')
+        when email like '%g.mail%' then replace(email, 'g.mail', 'gmail')
+        when email like '%gmsil%' then replace(email, 'gmsil', 'gmail')
+        when email like '%gmqil%' then replace(email, 'gmqil', 'gmail')
+        when email like '%gmial%' then replace(email, 'gmial', 'gmail')
+        when email like '%gmal%' then replace(email, 'gmal', 'gmail')
+        when email like '%gamail%' then replace(email, 'gamail', 'gmail')
+        when email like '%gmai.%' then replace(email, 'gmai', 'gmail')
+        when email like '%gamil%' then replace(email, 'gamil', 'gmail')
+        when email like '%gail%' then replace(email, 'gail', 'gmail')
+        when email like '%g.mail%' then replace(email, 'g.mail', 'gmail')
+        when email like '%g.gmail%' then replace(email, 'g.gmail', 'gmail')
+        when email like '%0gmail.%' then replace(email, '0gmail', 'gmail')
+        when email like '%68gmail.%' then 'ahmadunmasrah68@gmail.com'
+        when email like '%hitmail.%' then replace(email, 'hitmail', 'hotmail')
+        when email like '%gmail%' then concat(substring_index(email, '@', 1), '@', substring_index(substring_index(email, '@', -1), '.', 1), '.com')
+        else email
+	end as new_email
+From onpayt_2026)
+Select substring_index(new_email, '@', -1) as n_email
+From table_1
+Group by n_email;
+
+-- Create new column name fixed_email
+Alter table onpayt_2026
+add column fixed_email varchar(500);
+
+-- Populate fixed_email with query above
+Start transaction;
+Update onpayt_2026
+set fixed_email = 
+	case 
+		when email like '%yahooyahoo%' then replace(email, 'yahooyahoo', 'yahoo')
+        when email like '%yhaoo%' then replace(email, 'yhaoo', 'yahoo')
+        when email like '%yaoo%' then replace(email, 'yaoo', 'yahoo')
+        when email like '%yahii%' then replace(email, 'yahii', 'yahoo')
+        when email like '%yahoo.c' then replace(email, 'yahoo.c', 'yahoo.com')
+        when email like '%yahoo.con%' then replace(email, 'yahoo.con', 'yahoo.com')
+        when email like '%yahoo.com619454%' then replace(email, 'yahoo.com619454', 'yahoo.com')
+        when email like '%gnail%' then replace(email, 'gnail', 'gmail')
+        when email like '%g.mail%' then replace(email, 'g.mail', 'gmail')
+        when email like '%gmsil%' then replace(email, 'gmsil', 'gmail')
+        when email like '%gmqil%' then replace(email, 'gmqil', 'gmail')
+        when email like '%gmial%' then replace(email, 'gmial', 'gmail')
+        when email like '%gmal%' then replace(email, 'gmal', 'gmail')
+        when email like '%gamail%' then replace(email, 'gamail', 'gmail')
+        when email like '%gmai.%' then replace(email, 'gmai', 'gmail')
+        when email like '%gamil%' then replace(email, 'gamil', 'gmail')
+        when email like '%gail%' then replace(email, 'gail', 'gmail')
+        when email like '%g.mail%' then replace(email, 'g.mail', 'gmail')
+        when email like '%g.gmail%' then replace(email, 'g.gmail', 'gmail')
+        when email like '%0gmail.%' then replace(email, '0gmail', 'gmail')
+        when email like '%68gmail.%' then 'ahmadunmasrah68@gmail.com'
+        when email like '%hitmail.%' then replace(email, 'hitmail', 'hotmail')
+        when email like '%perodua.com.mu'then replace(email, 'perodua.com.mu','perodua.com.my')
+        when email like '%gmail%' then concat(substring_index(email, '@', 1), '@', substring_index(substring_index(email, '@', -1), '.', 1), '.com')
+        else email
+	end;
+Rollback;
+Commit;
+
+-- Create column name prefix_after and populate it with preifx after '@'
+Start transaction;
+Alter table onpayt_2026
+Add column prefix_after varchar(50);
+Update onpayt_2026
+Set prefix_after = substring_index(fixed_email, '@', -1);
+Rollback;
+Commit;
+
+-- Fixing fixed email based on the query above combine with case statement
+Select
+	distinct fixed_email,
+    prefix_after,
+    case
+		when (prefix_after regexp '^gmail|^yahoo' or fixed_email like '%12345%' ) and length(substring_index(fixed_email, '@', 1)) <= 5 then null
+        when fixed_email like '%aaaa%' then null
+        when lower(fixed_email) regexp 'hamba|anonymous' then null
+        when length(substring_index(substring_index(fixed_email, '@', -1), '.', 1)) <= 2 and prefix_after not regexp 'tm|gov|edu' then null
+        when prefix_after regexp 'shopcube|1602|^com.my|customer|ship79.com|hotrokh|mlgmail.com|weblibray|wshu.net|^my.com|me.com' then null
+        when fixed_email like '%1.2.7@gmail.com%' then null
+        else fixed_email
+	end as new_email
+From onpayt_2026
+;
+
+-- Set to null on fixed_email column based on the above query
+Start transaction;
+Update onpayt_2026
+set fixed_email = 
+	case
+		when (prefix_after regexp '^gmail|^yahoo' or fixed_email like '%12345%' ) and length(substring_index(fixed_email, '@', 1)) <= 5 then null
+        when fixed_email like '%aaaa%' then null
+        when lower(fixed_email) regexp 'hamba|anonymous' then null
+        when length(substring_index(substring_index(fixed_email, '@', -1), '.', 1)) <= 2 and prefix_after not regexp 'tm|gov|edu' then null
+        when prefix_after regexp 'shopcobe|1602|^com.my|customer|ship79.com|hotrokh|mlgmail.com|web-library|wshu.net|^my.com|me.com' then null
+        when fixed_email like '%1.2.7@gmail.com%' then null
+        else fixed_email
+		end;
+Rollback;
+Commit; 
+
+-- Identify which phone numbers are not follow rule 11 and 10 numbers and also other rules
+Select
+	phone_number,
+    length(phone_number) as length_phone,
+    case
+		when length(phone_number) <= 10 then null
+        when phone_number like '%123456%' then null
+        when phone_number like '%0000%' then null
+        when phone_number like '%11111%' then null
+        when phone_number regexp '^6001[^1]' then concat(6, substring(phone_number, 3, 12))
+		When phone_number like '6011%' and length(phone_number) = 11 then null
+        When phone_number not like '6011%' and length(phone_number) = 12 then null
+        when phone_number regexp '^6001[^1]' then concat(6, substring(phone_number, 3, 12))
+        when phone_number like '60011%' and length(phone_number) = 13 then concat(6, substring(phone_number, 3, 12))
+        when phone_number not like '60011%' and length(phone_number) = 12 then concat(60, substring(phone_number, 3, 12))
+        when phone_number not like '60011%' and length(phone_number) = 12 then concat(60, substring(phone_number, 2, 12))
+        when phone_number not like '601%' and length(phone_number) <= 12  then null
+        when length(phone_number) >= 13 then null
+        else phone_number
+	end as phone_fixed
+From
+	onpayt_2026;
+	
+-- Grouping phone and doing systematic debugging 
+with table_1 as (Select
+	phone_number,
+    length(phone_number) as length_phone,
+    case
+		when length(phone_number) <= 10 then null
+        when phone_number like '%123456%' then null
+        when phone_number like '%0000%' then null
+        when phone_number like '%11111%' then null
+        when phone_number regexp '^6001[^1]' then concat(6, substring(phone_number, 3, 12))
+		When phone_number like '6011%' and length(phone_number) = 11 then null
+        When phone_number not like '6011%' and length(phone_number) = 12 then null
+        when phone_number regexp '^6001[^1]' then concat(6, substring(phone_number, 3, 12))
+        when phone_number like '60011%' and length(phone_number) = 13 then concat(6, substring(phone_number, 3, 12))
+        when phone_number not like '60011%' and length(phone_number) = 12 then concat(60, substring(phone_number, 3, 12))
+        when phone_number not like '60011%' and length(phone_number) = 12 then concat(60, substring(phone_number, 2, 12))
+        when phone_number not like '601%' and length(phone_number) <= 12  then null
+        when length(phone_number) >= 13 then null
+        else phone_number
+	end as phone_fixed
+From
+	onpayt_2026)
+Select distinct phone_fixed,
+	length(phone_fixed) as length_phone,
+	count(phone_fixed) as c_p,
+	phone_number,
+    length(phone_number) as l_op,
+    left(phone_fixed, 4) as prefix_phone
+From table_1
+Group by phone_fixed, phone_number;
+
+-- Create new column name fixed_phone_number
+Alter table onpayt_2026
+add column fixed_phone_number int;
+
+-- Populate fixed_phone_number with query above
+Start transaction;
+Update onpayt_2026
+set fixed_phone_number = 
+    case
+		when length(phone_number) <= 10 then null
+        when phone_number like '%123456%' then null
+        when phone_number like '%0000%' then null
+        when phone_number like '%11111%' then null
+        when phone_number regexp '^6001[^1]' then concat(6, substring(phone_number, 3, 12))
+		When phone_number like '6011%' and length(phone_number) = 11 then null
+        When phone_number not like '6011%' and length(phone_number) = 12 then null
+        when phone_number regexp '^6001[^1]' then concat(6, substring(phone_number, 3, 12))
+        when phone_number like '60011%' and length(phone_number) = 13 then concat(6, substring(phone_number, 3, 12))
+        when phone_number not like '60011%' and length(phone_number) = 12 then concat(60, substring(phone_number, 3, 12))
+        when phone_number not like '60011%' and length(phone_number) = 12 then concat(60, substring(phone_number, 2, 12))
+        when phone_number not like '601%' and length(phone_number) <= 12  then null
+        when length(phone_number) >= 13 then null
+        else phone_number
+	end;
+Rollback;
+Commit;
+
+-- End of data cleaning for onpayt_2026
