@@ -322,7 +322,6 @@ with table_1 as (Select
         when email like '%g.mail%' then replace(email, 'g.mail', 'gmail')
         when email like '%g.gmail%' then replace(email, 'g.gmail', 'gmail')
         when email like '%0gmail.%' then replace(email, '0gmail', 'gmail')
-        when email like '%68gmail.%' then 'ahmadunmasrah68@gmail.com'
         when email like '%hitmail.%' then replace(email, 'hitmail', 'hotmail')
         when email like '%gmail%' then concat(substring_index(email, '@', 1), '@', substring_index(substring_index(email, '@', -1), '.', 1), '.com')
         else email
@@ -361,7 +360,6 @@ set fixed_email =
         when email like '%g.mail%' then replace(email, 'g.mail', 'gmail')
         when email like '%g.gmail%' then replace(email, 'g.gmail', 'gmail')
         when email like '%0gmail.%' then replace(email, '0gmail', 'gmail')
-        when email like '%68gmail.%' then 'ahmadunmasrah68@gmail.com'
         when email like '%hitmail.%' then replace(email, 'hitmail', 'hotmail')
         when email like '%perodua.com.mu'then replace(email, 'perodua.com.mu','perodua.com.my')
         when email like '%gmail%' then concat(substring_index(email, '@', 1), '@', substring_index(substring_index(email, '@', -1), '.', 1), '.com')
